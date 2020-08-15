@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: students-ci-cd master stack
+
+Parameters:
+  ProjectName:
+    Type: String
+  Env:
+    Type: String
+  LambdaLocationBucket:
+    Type: String
+  ArtifactsPath:
+    Type: String
+
+Resources:
+  DeployIamLambdaRole:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${LambdaLocationBucket}.s3.amazonaws.com/${ArtifactsPath}/deploy-iam-lambda-role.yml
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Env: !Ref Env
+  
+  ApiGatewayApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      DefinitionBody:
+        Fn::Transform:
+          Name: AWS::Include
+          Parameters:
+            Location: !Sub s3://${LambdaLocationBucket}/${ArtifactsPath}/deploy-proxy-api.yml
+      StageName: !Ref Env
+      Variables:
+        ServerlessExpressLambdaFunctionName: !Ref StudentsFunction
+        Region: !Ref AWS::Region
+        AccountId: !Ref AWS::AccountId
+        ProjectName: !Ref ProjectName
+        Env: !Ref Env
+
+  LambdaApiGatewayExecutionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt StudentsFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join
+        - ''
+        - - 'arn:aws:execute-api:'
+          - !Ref AWS::Region
+          - ":"
+          - !Ref AWS::AccountId
+          - ":"
+          - !Ref ApiGatewayApi
+          - "/*/*"
+
+  StudentsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-${Env}-lambda-microservice
+      CodeUri: ../dist
+      Handler: lambda.handler
+      MemorySize: 128
+      Role: !GetAtt DeployIamLambdaRole.Outputs.LambdaRoleArn
+      Runtime: nodejs12.x
+      Timeout: 30
+      Events:
+        ProxyApiRoot:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGatewayApi
+            Path: /
+            Method: ANY
+        ProxyApiGreedy:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGatewayApi
+            Path: /{proxy+}
+            Method: ANY
